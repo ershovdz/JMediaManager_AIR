@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:TitleWindow
+	xmlns:mx="http://www.adobe.com/2006/mxml"
+	layout="absolute"
+	showCloseButton="true"
+	close="PopUpManager.removePopUp(this)"
+	height="200"
+	width="300">
+	<mx:Script>
+		<![CDATA[
+			import mx.events.FlexEvent;
+			import mx.managers.PopUpManager;
+			
+			private static var COMPLETE:String = "Complete";
+			
+			private function image_handleComplete(event:Event):void
+			{
+				image.addEventListener(FlexEvent.UPDATE_COMPLETE, image_handleUpdateComplete);
+			}
+			
+			private function image_handleUpdateComplete(event:FlexEvent):void
+			{
+				currentState = COMPLETE;
+				
+				this.height = NaN;
+				this.width = NaN;
+				
+				PopUpManager.centerPopUp(this);				
+			}
+			
+			private function image_handleProgress(event:ProgressEvent):void
+			{
+				progressBar.setProgress(event.bytesLoaded, event.bytesTotal);
+			}
+		]]>
+	</mx:Script>
+	
+	<mx:Fade id="fade" alphaFrom="0" alphaTo="1" />
+	
+	<mx:states>
+		<mx:State name="Complete">
+			<mx:RemoveChild target="{progressBar}" />
+		</mx:State>
+		
+	</mx:states>
+	
+	<mx:Image id="image" complete="image_handleComplete(event)" progress="image_handleProgress(event)" />	
+	<mx:ProgressBar id="progressBar" horizontalCenter="0" verticalCenter="0" mode="manual" labelPlacement="center" label="{resourceManager.getString('localization', 'loading')}" />
+	
+</mx:TitleWindow>

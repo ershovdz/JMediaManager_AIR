@@ -1,0 +1,1066 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:WindowedApplication xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" title="{resourceManager.getString('myResources', 'adminPanel')}" showStatusBar="false" width="1000" height="600" backgroundGradientAlphas="[1.0, 1.0]" backgroundGradientColors="[#DFE8F6, #DFE8F6]" creationComplete="init()" minWidth="1050" fontSize="11">
+<mx:Metadata>
+    [ResourceBundle("myResources")]
+</mx:Metadata> 
+<mx:Script>
+<![CDATA[
+	import mx.core.DragSource;
+	import mx.events.DragEvent;
+	import mx.managers.DragManager;
+	import mx.containers.Canvas;
+	import mx.controls.Alert;
+	import mx.events.ListEvent;
+	import mx.core.UITextField;
+	import com.adobe.serialization.json.*;
+	import mx.collections.ArrayCollection;
+	import com.adobe.images.JPGEncoder;
+	import com.benstucki.utilities.IconUtility;
+	
+	private var progressBarStepSize:Number;
+	private var progressBarValue:Number;
+	private const monthArray1:Array=["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"];	
+
+	[Bindable]
+	private var trueFalseDP:Array=[{label:"true", value:true},{label:"false", value:false}];
+	[Bindable]
+	private var sortByDP:Array=[{label:'', value:'name'},
+								{label:'', value:'size'},
+								{label:'', value:'modified'}];
+	[Bindable]
+	private var treeDP:ArrayCollection;
+	[Bindable]
+	private var tileListDP:Array;
+	private var tileListDPSource:Array;
+	private var currPhoto:Object;
+	[Bindable]
+	private var filesForUploadDP:ArrayCollection=new ArrayCollection();
+	private var currentUploadIndex:int=0;
+	private var smallPicSize:int=0;
+	[Bindable]
+	private var middlePicSize:int=448;
+	private var bigPicSize:int=0;
+	
+	private var picturePreviewContentWidth:int=0;
+	private var picturePreviewContentHeight:int=0;
+	
+	private var treeOpenQueueIds:Array=new Array();
+	
+	private var domainUrl:String="";//http://studgrad.info/";
+	private var userName:String="";//admin";
+	private var userPass:String="";//testtest";
+	
+	private function init():void{
+		// Инициализирую контент всех вкладок Акордеона - листаю 1-->0
+		accordion.selectedIndex=0;
+		switchLanguage(true);
+		
+		// Слушаю события перетаскивания файлов для аплоада
+		filesUploadPanel.addEventListener( NativeDragEvent.NATIVE_DRAG_ENTER,onUploadDragEnter);
+		filesUploadPanel.addEventListener( NativeDragEvent.NATIVE_DRAG_DROP,onUploadDragDrop);
+            		
+		// Слушаю события перетаскивания в дерево
+		tree.addEventListener( NativeDragEvent.NATIVE_DRAG_ENTER,onTreeDragEnter);
+
+		// Загружаем config.xml
+		var loaderConfig:URLLoader = new URLLoader();
+		loaderConfig.addEventListener(Event.COMPLETE,onConfigLoaded);
+		loaderConfig.addEventListener(IOErrorEvent.IO_ERROR, onConfigLoadError);
+		loaderConfig.load(new URLRequest("config.xml"));
+	}
+	
+	private function onConfigLoaded(event:Event):void{
+		try{
+			var configXML:XML = new XML(event.currentTarget.data);
+		} catch(e:Error){
+			return;
+		}
+		// Если файл существует и XML валидный - выдергиваем из него данные
+		domainTF.text=configXML.domain.@value.toString();
+		loginTF.text=configXML.login.@value.toString();
+	}
+	private function onConfigLoadError(event:IOErrorEvent):void{
+		return;
+	}
+
+	private function onLoginClick(e:MouseEvent):void{
+		mainHDividedBox.visible=true;
+		
+		// Сохранаю в файл
+		var xmlToSave:XML=new XML(	<config>
+										<domain />
+										<login />
+									</config>);
+		xmlToSave.domain.@value=domainTF.text;
+		xmlToSave.login.@value=loginTF.text;
+		saveToFile(File.applicationDirectory.nativePath+"/config.xml", xmlToSave.toXMLString());
+		
+		domainUrl=validateDomenName(domainTF.text);
+		userName=loginTF.text;
+		userPass=passwordTF.text;
+		
+		// Загружаем дерево-каталог
+		loadFullTree();
+	}
+	
+	private function validateDomenName(str:String):String{
+		// Удаляю пробелы
+		for(var i:int=0; i<str.length; i++){
+			if(str.charAt(i)==" ") {
+				str=str.substr(0,i)+str.substr(i+1,10000);
+				i--;
+			}
+		}
+
+		// Добавляю http://
+		if(str.substr(0,7)!="http://") str="http://"+str;
+		
+		// Добавляю в конец слэш /
+		if(str.substr(-1,1)!="/") str=str+"/";
+		
+		return str;
+	}
+
+	private function onTreeLoadError(event:IOErrorEvent):void{
+		showDomainError();
+//		Alert.show(event.text, event.type);
+	}
+	
+	private function showDomainError():void{
+		// Показываю окно логина
+		loginPanel.visible=true;
+		mainHDividedBox.visible=false;
+		
+		// Показываю ошибку
+		Alert.show(resourceManager.getString('myResources', 'domainError'));
+	}
+	
+	private function saveToFile(url:String, data:String):void{
+		var destination:File=new File(url);
+		var myFileStream:FileStream = new FileStream();
+		myFileStream.open(destination, FileMode.WRITE);
+		myFileStream.writeUTFBytes(data);
+		myFileStream.close();
+	}
+	
+	
+	////////////////////////////////////////////////////////////
+	/////////////////////// ПАНЕЛЬ КАТАЛОГ
+	////////////////////////////////////////////////////////////
+	
+	private function loadFullTree(nullEvent:Event=null):void{
+		// Показываю прелоадер для Tree
+		treePreloader.visible=true;
+		
+		saveTreeOpenedItems();
+		
+		// Загружаем дерево-каталог
+		var loaderPass:URLLoader = new URLLoader();
+		loaderPass.addEventListener(Event.COMPLETE,onFullTreeLoaded);
+		loaderPass.addEventListener(IOErrorEvent.IO_ERROR, onTreeLoadError);
+		loaderPass.load(new URLRequest(domainUrl+"index2.php?option=com_jmediamanager&controller=server&func=getXMLTree&no_html=1&login="+userName+"&password="+userPass));
+	}
+	
+	private function saveTreeOpenedItems():void{
+		// Запоминаю открытые элементы в дереве
+		if(treeDP){
+			treeOpenQueueIds=new Array();
+			if(tree.isItemOpen(treeDP.getItemAt(0))) treeOpenQueueIds.push(treeDP.getItemAt(0).cid);
+			if(treeDP.getItemAt(0).hasOwnProperty("children"))checkForOpenedItems(treeDP.getItemAt(0).children);
+		}
+	}
+	
+	// Проверяю на открытые ветки дерева перед загрузкой дерева
+	private function checkForOpenedItems(ac:ArrayCollection):void{
+		for (var i:int=0; i<ac.length; i++){
+			if(ac.getItemAt(i).hasOwnProperty("children")){
+				if(tree.isItemOpen(ac.getItemAt(i))) treeOpenQueueIds.push(ac.getItemAt(i).cid);
+				checkForOpenedItems(ac.getItemAt(i).children);
+			}
+		}
+	}
+
+	private function openTreeOpenedItems():void{
+		// Раскрываю все элементы дерева которые были открыты
+		if(treeOpenQueueIds.indexOf(treeDP.getItemAt(0).cid)!=-1) tree.expandItem(treeDP.getItemAt(0),true);
+		if(treeDP.getItemAt(0).hasOwnProperty("children")) openTreeItems(treeDP.getItemAt(0).children);
+	}
+
+	// Открываю ветки дерева которые ранее были открыты 
+	private function openTreeItems(ac:ArrayCollection):void{
+		for (var i:int=0; i<ac.length; i++){
+			if(ac.getItemAt(i).hasOwnProperty("children")){
+				if(treeOpenQueueIds.indexOf(ac.getItemAt(i).cid)!=-1) {
+					tree.expandItem(ac.getItemAt(i),true);
+				}
+				openTreeItems(ac.getItemAt(i).children);
+			}
+		}
+	}
+
+	private function onFullTreeLoaded(event:Event):void{
+		try{
+			var treeXML:XML = new XML(event.currentTarget.data);
+		} catch(e:Error){
+			showDomainError();
+//			Alert.show(e.message,e.name);
+			return;
+		}
+		
+		// Если первая загрузка - грузим размеры картинок
+		if(smallPicSize==0) loadPicSizes();
+			
+		trace(treeXML);
+		treeDP=new ArrayCollection();
+		// Корневой элемент
+		var rootNode:Object={	type:treeXML.@type.toString(),
+								status:treeXML.@status.toString(),
+								caption:treeXML.caption[0].toString(),
+								cid:treeXML.cid[0].toString()};
+		// Если есть дочерние элементы запускаем парсинг
+		if(treeXML.hasOwnProperty("children")) rootNode.children=parseChildren(treeXML.children.node);
+		treeDP.addItem(rootNode);
+		
+		// Раскрываю дерево
+		var refreshTreeTimer:Timer = new Timer(100,1);
+		refreshTreeTimer.addEventListener(TimerEvent.TIMER, expandTreeItemsOnTimer);
+		refreshTreeTimer.start();
+	}
+	
+	private function expandTreeItemsOnTimer(e:TimerEvent):void{
+		// Скрываю прелоадер для Tree
+		treePreloader.visible=false;
+		
+		openTreeOpenedItems();
+	}
+	
+	private function parseChildren(nodeXML:XMLList):ArrayCollection{
+		if (!nodeXML) return null;
+		var retAC:ArrayCollection=new ArrayCollection();
+		// Перебор дочерних элементов
+		for (var i:int=0; i<nodeXML.length(); i++){
+			var eachObj:Object={	type:nodeXML[i].@type.toString(),
+									id:nodeXML[i].@id.toString(),
+									active:nodeXML[i].@active.toString(),
+									status:nodeXML[i].@status.toString(),
+									caption:nodeXML[i].caption[0].toString(),
+									cid:nodeXML[i].cid[0].toString(),
+									parent:nodeXML[i].parent[0].toString()};
+			// Если имеются дочерние элементы, углубляем ветку, парсим дальше
+			if (nodeXML[i].hasOwnProperty("children")) {
+				eachObj.children=parseChildren(nodeXML[i].children.node);
+			}
+			// Если имеются иконки - сохраняем
+			if (nodeXML[i].hasOwnProperty("thumb")) {
+				eachObj.thumb=nodeXML[i].thumb.toString();
+			}
+			if (nodeXML[i].hasOwnProperty("pic")) eachObj.pic=nodeXML[i].pic.toString();
+			if (nodeXML[i].hasOwnProperty("big_pic")) eachObj.big_pic=nodeXML[i].big_pic.toString(); 
+			retAC.addItem(eachObj);
+		}
+		return retAC;
+	}
+	
+	private function selectTreeItem(e:Event):void{
+		tileListPreloader.visible=true;
+		// Чистим панель свойств
+		clearPropertiesPanel();
+		
+		if(tree.selectedItem){
+			// Загружаем содержимое папки
+			var loaderPass:URLLoader = new URLLoader();
+			loaderPass.addEventListener(Event.COMPLETE,onFolderContentLoaded);
+			loaderPass.load(new URLRequest(domainUrl+"index2.php?option=com_jmediamanager&controller=server&func=getImages&catid="+tree.selectedItem.id+"&no_html=1&login="+userName+"&password="+userPass));
+		}
+	}
+	
+	public function onCreateBtnClick(e:MouseEvent=null):void{
+		// Чистим панель свойств
+		clearPropertiesPanel();
+		
+		// Папка в которой создать либо выделеная папка, либо родитель файла
+		var parent:String;
+		if(tree.selectedItem.type!="page") parent=tree.selectedItem.parent else parent=tree.selectedItem.id;
+		
+		// Создаем папку в текущей папке
+		var loaderPass:URLLoader = new URLLoader();
+		treePreloader.visible=true;
+		loaderPass.addEventListener(Event.COMPLETE,loadFullTree);
+		var url:String=	domainUrl+"index2.php?"+
+						"option=com_jmediamanager"+
+						"&controller=server"+
+						"&func=edit+" + 
+						"&no_html=1"+
+						"&type=createcat"+
+						"&login="+userName+
+						"&password="+userPass+
+						"&param1="+parent+
+						"&param2="+resourceManager.getString('myResources', 'newCategory')+
+						"&param3="+resourceManager.getString('myResources', 'newCategoryDescription')+
+						"&param4=0"+
+						"&param5=0"+
+						"&param6=1";
+		url=encodeURI(url);
+		loaderPass.load(new URLRequest(url));
+	}
+
+	private function onDeleteInTreeBtnClick(e:MouseEvent):void{
+		// Если тип page, то возможно удаление
+		if (tree.selectedItem.type=="root") return;
+		// Чистим панель свойств
+		clearPropertiesPanel();
+		// Удаляем текущую папку
+		var loaderPass:URLLoader = new URLLoader();
+		treePreloader.visible=true;
+		loaderPass.addEventListener(Event.COMPLETE,loadFullTree);
+		var url:String=	domainUrl+"index2.php?"+
+						"option=com_jmediamanager"+
+						"&controller=server"+
+						"&func=edit+" + 
+						"&no_html=1"+
+						"&type=deletecat"+
+						"&login="+userName+
+						"&password="+userPass+
+						"&param1="+tree.selectedItem.id;
+		url=encodeURI(url);
+		loaderPass.load(new URLRequest(url));
+	}
+	
+	private function onTreeItemRename(e:ListEvent):void{
+		// Чистим панель свойств
+		clearPropertiesPanel();
+		// Переименовываем текущую папку если имя изменилось
+		if(e.itemRenderer.data.caption==TextInput(tree.itemEditorInstance).text) return;
+		var loaderPass:URLLoader = new URLLoader();
+		treePreloader.visible=true;
+		loaderPass.addEventListener(Event.COMPLETE,loadFullTree);
+		var url:String=	domainUrl+"index2.php?"+
+						"option=com_jmediamanager"+
+						"&controller=server"+
+						"&func=edit+" + 
+						"&no_html=1"+
+						"&type=renamecat"+
+						"&login="+userName+
+						"&password="+userPass+
+						"&param1="+tree.selectedItem.id+
+						"&param2="+TextInput(tree.itemEditorInstance).text;
+		url=encodeURI(url);
+		loaderPass.load(new URLRequest(url));
+	}
+	private function disableEditing(event:ListEvent):void{
+		event.preventDefault();
+		return;
+	} 
+	private function onTreeDoubleClick(event:ListEvent):void{
+		var rIndex:Number = event.rowIndex;
+		if(rIndex==0) return;
+		tree.editedItemPosition = {columnIndex:0, rowIndex:rIndex};
+	}
+
+	////////////////////////////////////////////////////////////
+	/////////////////////// ПАНЕЛЬ ФОТОГРАФИЙ
+	////////////////////////////////////////////////////////////
+
+	private function onFolderContentLoaded(event:Event):void{
+		var priceObject:Object = JSON.decode(event.target.data);
+		// Запоминем исходные картинки
+		tileListDPSource=priceObject.images;
+		// Дублируем массив
+		tileListDP=new Array();
+		for(var i:int=0;i<tileListDPSource.length;i++){
+			tileListDPSource[i].borderColor=tileListDPSource[i].published==1 ? "0xcccccc" : "0xff0000";
+			tileListDP.push(tileListDPSource[i]);
+		}
+		// Сортируем картинки
+		onSortByChange(null);
+		// Очищаем фильтр
+		filterTF.text="";
+		// Чистим панель свойств
+		clearPropertiesPanel();
+		
+		// Прячем прелоадер
+		tileListPreloader.visible=false;
+	}
+	
+	private function onPictureSelect(event:Event):void{
+		currPhoto=tileList.selectedItem;
+		picturePreview.source=currPhoto.url_pic;
+		// Обновление Панели Details
+		pictureDetails.text=resourceManager.getString('myResources', 'pictureName')+"\n";
+		pictureDetails.text+=currPhoto.imgtitle+"\n";
+		if(currPhoto.imgtext!="") pictureDetails.text+=resourceManager.getString('myResources', 'pictureDescription')+"\n";
+		if(currPhoto.imgtext!="") pictureDetails.text+=currPhoto.imgtext+"\n";
+		if(currPhoto.tags!="") pictureDetails.text+=resourceManager.getString('myResources', 'pictureTags')+"\n";
+		if(currPhoto.tags!="") pictureDetails.text+=currPhoto.tags+"\n";
+		pictureDetails.text+=resourceManager.getString('myResources', 'pictureSize')+"\n";
+		pictureDetails.text+=(currPhoto.size/1024).toFixed(2)+" Kb\n";
+		pictureDetails.text+=resourceManager.getString('myResources', 'pictureDate')+"\n";
+		pictureDetails.text+=getDateMyFormat(new Date(Number(currPhoto.lastmod)*1000))+" "+getTimeMyFormat(new Date(Number(currPhoto.lastmod)*1000))+"\n";
+		
+		// Обновление панели Таблица свойств - Редактирование
+		editorAutorTF.text=currPhoto.imgauthor;
+		editorNameTF.text=currPhoto.imgtitle;
+		if(currPhoto.imgtext!="") editorDescriptionTF.text=currPhoto.imgtext else editorDescriptionTF.text="";
+		editorPublished.selectedIndex = currPhoto.published.toString()=="1" ? 0: 1;
+		if(currPhoto.tags!="") editorTagsTF.text=currPhoto.tags else editorTagsTF.text="";
+	}
+
+	private function onPicturePreviewResize(event:Event):void{
+		if(!picturePreview) return;
+		var kfx:Number=pictureDetailsPanel.width/picturePreviewContentWidth;
+		picturePreview.height=picturePreviewContentHeight*kfx;
+	}
+
+	private function onPictureLoaded(event:Event):void{
+		picturePreviewContentWidth=picturePreview.contentWidth;
+		picturePreviewContentHeight=picturePreview.contentHeight;
+		pictureDetailsPanel.maxWidth=picturePreview.contentWidth;
+		onPicturePreviewResize(null);
+	}
+	
+	private function onSortByChange(event:Event):void{
+		if(tileListDP) {
+			// Чистим панель свойств
+			clearPropertiesPanel();
+			switch(sortByCombo.selectedItem.value){
+				case "name":
+					tileListDP.sortOn("imgtitle");
+				break;
+				case "size":
+					tileListDP.sortOn("size", Array.NUMERIC);
+				break;
+				case "modified":
+					tileListDP.sortOn("lastmod", Array.NUMERIC);
+				break;
+			}
+			tileList.dataProvider=tileListDP;
+		}
+	}
+	
+	private function onFilterChange(event:Event):void{
+		if(!tileListDPSource) return;
+		// Фильрую исходя из исходного массива
+		tileListDP=new Array();
+		for(var i:int=0;i<tileListDPSource.length;i++){
+			if(tileListDPSource[i].imgtitle.toLowerCase().indexOf(filterTF.text.toLowerCase())!=-1)
+				tileListDP.push(tileListDPSource[i]);
+		}
+		
+		// Применяю сортировку
+		onSortByChange(null);
+	}
+	
+	private function onDeletePhotosBtnClick():void{
+		treePreloader.visible=true;
+		for (var i:int=0; i<tileList.selectedItems.length; i++){
+			// Удалаю каждую из выделеных фотографий на сервере
+			var loaderPass:URLLoader = new URLLoader();
+			var url:String=	domainUrl+"index2.php?"+
+							"option=com_jmediamanager"+
+							"&controller=server"+
+							"&func=edit+" + 
+							"&no_html=1"+
+							"&type=deletefoto"+
+							"&login="+userName+
+							"&password="+userPass+
+							"&param1="+tileList.selectedItems[i].id;
+			url=encodeURI(url);
+			loaderPass.load(new URLRequest(url));
+
+			// Удалаю каждую из выделеных фотографий в исходном TileListSource
+			for(var j:int=0;j<tileListDPSource.length;j++){
+				if(tileListDPSource[j].id==tileList.selectedItems[i].id) tileListDPSource.splice(j,1);
+			}
+		}
+		// Обновляю tileListDP применяя функцию фильтра
+		onFilterChange(null);
+		
+		// Перезагружаю дерево
+		loadFullTree();
+	}
+	
+
+
+
+	////////////////////////////////////////////////////////////
+	/////////////////////// ПАНЕЛЬ ЗАГРУЗКИ ФОТОГРАФИЙ
+	////////////////////////////////////////////////////////////
+
+
+	private function uploadPanelAddFiles(e:MouseEvent):void{
+		// Если в дереве не выбрана категория показываем ошибку
+		if(!tree.selectedItem || tree.selectedItem.type.toString()!="page") {
+			Alert.show(resourceManager.getString('myResources', 'selectCategoryError'));
+			return;
+		}
+		
+		var fileToOpen:File = new File();
+		var fileTypeFilter:FileFilter = new FileFilter(resourceManager.getString('myResources', 'pictureFiles')+'(jpg, gif, png)', '*.Jpg; *.jpg; *.JPG; *.Jpeg; *.jpeg; *.JPEG; *.Gif; *.gif; *.GIF; *.Png; *.png; *.PNG');
+		try {
+		    fileToOpen.browseForOpenMultiple(resourceManager.getString('myResources', 'fileSelectHint'), [fileTypeFilter]);
+		    fileToOpen.addEventListener(FileListEvent.SELECT_MULTIPLE, filesSelected);
+		} catch (error:Error){trace("Failed:", error.message)}
+	}
+
+	private function filesSelected(event:FileListEvent):void {
+		var files:Array=event.files;
+		for(var i:int=0; i<files.length; i++){
+			var eachFile:File = files[i];
+			filesForUploadDP.addItem({	name:eachFile.name,
+										size:eachFile.size,
+										status:resourceManager.getString('myResources', 'inQueue'),
+										uploaded:false,
+										url:eachFile.url});
+		}
+	}
+		
+	private function uploadPanelUploadBtnClick(e:MouseEvent):void{
+		// Если в дереве не выбрана категория показываем ошибку
+		if(!tree.selectedItem || tree.selectedItem.type.toString()!="page") {
+			Alert.show(resourceManager.getString('myResources', 'selectCategoryError'));
+			return;
+		}
+		
+		if(filesForUploadDP.length==0) return;
+		currentUploadIndex=0;
+		continueUploading();
+		
+		var filesPreparedForUpload:int=0;
+		for (var i:int=0; i<filesForUploadDP.length; i++){
+			if(filesForUploadDP[i].uploaded==false) filesPreparedForUpload++;		
+		}
+		progressBarValue=0;
+		progressBarStepSize=(100/filesPreparedForUpload)/3;
+	}
+	private function continueUploading():void{
+		if(currentUploadIndex>=filesForUploadDP.length) {
+			progressBar.setProgress(100, 100);
+			progressBar.label=resourceManager.getString('myResources', 'ready');
+			selectTreeItem(null);
+			// Перезагружаю дерево
+			loadFullTree();
+			return;
+		}
+		if(filesForUploadDP[currentUploadIndex].uploaded) { currentUploadIndex++; continueUploading(); return; }
+		
+		// Создаем и загружаем маленькую картинку
+		var smallPic:Image=new Image();
+		smallPic.autoLoad=false;
+		smallPic.load(filesForUploadDP[currentUploadIndex].url);
+		smallPic.addEventListener(Event.COMPLETE, onSmallPicLoaded);
+	}
+	private function onSmallPicLoaded(event:Event):void{
+		// Помещаем загруженную маленькую картинку в BitmapData
+		var smallPic:Image=Image(event.currentTarget);
+		var k:Number=smallPicSize/Math.max(smallPic.contentWidth,smallPic.contentHeight);
+		if (k>1) k=1;
+		var matrix:Matrix=new Matrix(k,0,0,k);
+		var resultImageBitmapData:BitmapData=new BitmapData(smallPic.contentWidth*k,smallPic.contentHeight*k);
+		resultImageBitmapData.draw(smallPic, matrix);
+		
+		// Конвертируюем в Jpeg, BitmapData с маленькой картинкой
+		var jpgEncoder:JPGEncoder = new JPGEncoder(90);
+		var myByteArray:ByteArray = jpgEncoder.encode(resultImageBitmapData);
+
+		var url:String=domainUrl+"components/com_jmediamanager/upload/uploader2.php";
+		url+="?photoId=";
+		url+="&catId="+tree.selectedItem.id;
+		url+="&login="+userName;
+		url+="&password="+userPass;
+		url+="&sizeId=smallsize";
+		url+="&file="+filesForUploadDP[currentUploadIndex].name;
+		url+="&rnd="+Math.random();
+		url=encodeURI(url);
+		
+		var request:URLRequest = new URLRequest (url);
+		var loader: URLLoader = new URLLoader();
+		request.contentType = "application/octet-stream";
+		request.method = URLRequestMethod.POST;
+		request.data = myByteArray;
+		loader.load(request);
+		loader.addEventListener(Event.COMPLETE, onSmallImageSended); 
+	}
+	private function onSmallImageSended(event:Event):void{
+		progressBarValue+=progressBarStepSize;
+		progressBar.setProgress(progressBarValue, 100);
+		progressBar.label=Math.round(progressBarValue).toString()+" %";
+		
+		// Сохраняю Id фотографии
+		var answerXML:XML = new XML(event.currentTarget.data);
+		filesForUploadDP[currentUploadIndex].photoid=answerXML.photoid.toString();
+
+		// Создаем и загружаем среднюю картинку
+		var middlePic:Image=new Image();
+		middlePic.autoLoad=false;
+		middlePic.load(filesForUploadDP[currentUploadIndex].url);
+		middlePic.addEventListener(Event.COMPLETE, onMiddlePicLoaded);
+		
+	}
+	private function onMiddlePicLoaded(event:Event):void{
+		// Помещаем загруженную среднюю картинку в BitmapData
+		var middlePic:Image=Image(event.currentTarget);
+		var k:Number=middlePicSize/Math.max(middlePic.contentWidth,middlePic.contentHeight);
+		if (k>1) k=1;
+		var matrix:Matrix=new Matrix(k,0,0,k);
+		var resultImageBitmapData:BitmapData=new BitmapData(middlePic.contentWidth*k,middlePic.contentHeight*k);
+		resultImageBitmapData.draw(middlePic, matrix);
+		
+		// Конвертируюем в Jpeg, BitmapData со средней картинкой
+		var jpgEncoder:JPGEncoder = new JPGEncoder(90);
+		var myByteArray:ByteArray = jpgEncoder.encode(resultImageBitmapData);
+
+		var url:String=domainUrl+"components/com_jmediamanager/upload/uploader2.php";
+		url+="?photoId="+filesForUploadDP[currentUploadIndex].photoid;
+		url+="&catId="+tree.selectedItem.id;
+		url+="&login="+userName;
+		url+="&password="+userPass;
+		url+="&sizeId=midlesize";
+		url+="&file="+filesForUploadDP[currentUploadIndex].name;
+		url+="&rnd="+Math.random();
+		url=encodeURI(url);
+		
+		var request:URLRequest = new URLRequest (url);
+		var loader: URLLoader = new URLLoader();
+		request.contentType = "application/octet-stream";
+		request.method = URLRequestMethod.POST;
+		request.data = myByteArray;
+		loader.load(request);
+		loader.addEventListener(Event.COMPLETE, onMiddleImageSended); 
+	}
+	private function onMiddleImageSended(event:Event):void{
+		progressBarValue+=progressBarStepSize;
+		progressBar.setProgress(progressBarValue, 100);
+		progressBar.label=Math.round(progressBarValue).toString()+" %"
+		
+		// Создаем и загружаем большую картинку
+		var bigPic:Image=new Image();
+		bigPic.autoLoad=false;
+		bigPic.load(filesForUploadDP[currentUploadIndex].url);
+		bigPic.addEventListener(Event.COMPLETE, onBigPicLoaded);
+	}
+	private function onBigPicLoaded(event:Event):void{
+		// Помещаем загруженную большую картинку в BitmapData
+		var bigPic:Image=Image(event.currentTarget);
+		var k:Number=bigPicSize/Math.max(bigPic.contentWidth,bigPic.contentHeight);
+		if (k>1) k=1;
+		var matrix:Matrix=new Matrix(k,0,0,k);
+		var resultImageBitmapData:BitmapData=new BitmapData(bigPic.contentWidth*k,bigPic.contentHeight*k);
+		resultImageBitmapData.draw(bigPic, matrix);
+		
+		// Конвертируюем в Jpeg, BitmapData со средней картинкой
+		var jpgEncoder:JPGEncoder = new JPGEncoder(90);
+		var myByteArray:ByteArray = jpgEncoder.encode(resultImageBitmapData);
+
+		var url:String=domainUrl+"components/com_jmediamanager/upload/uploader2.php";
+		url+="?photoId="+filesForUploadDP[currentUploadIndex].photoid;
+		url+="&catId="+tree.selectedItem.id;
+		url+="&login="+userName;
+		url+="&password="+userPass;
+		url+="&sizeId=bigsize";
+		url+="&file="+filesForUploadDP[currentUploadIndex].name;
+		url+="&rnd="+Math.random();
+		url=encodeURI(url);
+		
+		var request:URLRequest = new URLRequest (url);
+		var loader: URLLoader = new URLLoader();
+		request.contentType = "application/octet-stream";
+		request.method = URLRequestMethod.POST;
+		request.data = myByteArray;
+		loader.load(request);
+		loader.addEventListener(Event.COMPLETE, onBigImageSended); 
+	}
+	private function onBigImageSended(event:Event):void{
+		progressBarValue+=progressBarStepSize;
+		progressBar.setProgress(progressBarValue, 100);
+		progressBar.label=Math.round(progressBarValue).toString()+" %"
+		
+		filesForUploadDP[currentUploadIndex].status=resourceManager.getString('myResources', 'uploaded');
+		filesForUploadDP[currentUploadIndex].uploaded=true;
+		filesForUploadDataGrid.dataProvider=filesForUploadDP;
+		
+		currentUploadIndex++;
+		continueUploading();
+	}
+	
+
+	
+
+
+	////////////////////////////////////////////////////////////
+	/////////////////////// ПАНЕЛЬ СВОЙСТВ
+	////////////////////////////////////////////////////////////
+
+
+	private function editorSaveTFValue(e:Event):void{
+		// Если картинка не выбрана
+		if (!currPhoto) return;
+		var property:String;
+		var value:String;
+		// Если текстовое поле
+		if (e.currentTarget is TextInput){
+			var tf:TextInput = TextInput(e.currentTarget);
+			switch(tf.name){
+				case "editorAutorTF":
+					property="imgauthor";
+				break;
+				case "editorNameTF":
+					property="imgtitle";
+					if(treeDP.getItemAt(0).hasOwnProperty("children"))renameNodeByCidInTree(treeDP.getItemAt(0).children, currPhoto.id, tf.text);
+				break;
+				case "editorDescriptionTF":
+					property="imgtext";
+				break;
+				case "editorTagsTF":
+					property="tags";
+				break;
+				default:
+					trace('Незнаю такого поля для редактирования');
+				break;
+			}
+			value=tf.text;
+		} else {
+			// Если Combo Box - Свойсво Published
+			property="published";
+			if(ComboBox(e.currentTarget).selectedIndex==0){
+				value="1";
+				tileList.selectedItem.borderColor="0xcccccc";
+			} else {
+				tileList.selectedItem.borderColor="0xff0000";
+				value="0";
+			}
+		}
+		
+		// Присваиваю в массиве текущему фото
+		currPhoto[property]=value;
+		// Присваиваю в исходном массиве
+		for (var i:int=0; i<tileListDPSource.length; i++){
+			if (tileListDPSource[i].id==currPhoto.id)
+				tileListDPSource[i][property]=value;
+		}
+		
+		// Обновляю TileList
+		var tmpTLSelIndex:int=tileList.selectedIndex;
+		tileList.dataProvider=tileListDP;
+		// Заново выбираю фото
+		tileList.selectedIndex=tmpTLSelIndex;
+		onPictureSelect(null);
+		
+		// Отсылаю на сохранение этого свойства
+		var loaderPass:URLLoader = new URLLoader();
+		var url:String=	domainUrl+"index2.php?"+
+						"option=com_jmediamanager"+
+						"&controller=server"+
+						"&func=edit+" + 
+						"&no_html=1"+
+						"&type=editfoto"+
+						"&login="+userName+
+						"&password="+userPass+
+						"&param1="+currPhoto.id+
+						"&param2="+property+
+						"&param3="+value;
+		url=encodeURI(url);
+		loaderPass.load(new URLRequest(url));
+	}
+	
+	// Ищу фотографию в дереве
+	private function renameNodeByCidInTree(ac:ArrayCollection, cid:String, newName:String):void{
+		for (var i:int=0; i<ac.length; i++){
+			if (ac.getItemAt(i).cid==cid) {
+				ac.getItemAt(i).caption=newName;
+				saveTreeOpenedItems();
+				tree.dataProvider=treeDP;
+				// Раскрываю дерево
+				var refreshTreeTimer:Timer = new Timer(100,1);
+				refreshTreeTimer.addEventListener(TimerEvent.TIMER, expandTreeItemsOnTimer);
+				refreshTreeTimer.start();
+				return;
+			}
+			if(ac.getItemAt(i).hasOwnProperty("children")){
+				renameNodeByCidInTree(ac.getItemAt(i).children,cid,newName);
+			}
+		}
+	}
+
+	
+	private function clearPropertiesPanel():void{
+		currPhoto=null;
+		// Обновление Панели Details
+		picturePreview.source="";
+		pictureDetails.text="";
+		
+		// Обновление панели Таблица свойств - Редактирование
+		editorAutorTF.text="";
+		editorNameTF.text="";
+		editorDescriptionTF.text="";
+		editorPublished.selectedIndex = 0;
+		editorTagsTF.text="";
+		
+	}
+	
+
+	////////////////////////////////////////////////////////////
+	/////////////////////// ПРОЧИЕ ФУНКЦИИ
+	////////////////////////////////////////////////////////////
+
+	private function getTimeMyFormat(date:Date):String{
+		var minutes:String = String(date.minutes).length == 1 ? "0"+String(date.minutes) : String(date.minutes);
+		var seconds:String = String(date.seconds).length == 1 ? "0"+String(date.seconds) : String(date.seconds);
+		return date.hours.toString()+"."+minutes+"."+seconds;
+	}
+
+	private function getDateMyFormat(date:Date):String{
+		return date.date+"."+monthArray1[date.month]+"."+date.fullYear+resourceManager.getString('myResources', 'yearAbbr');
+	}
+	
+	private function switchLanguage(toEn:Boolean):void{
+		if(toEn){
+			resourceManager.localeChain=['en_US'];
+		} else {
+			resourceManager.localeChain=['ru_RU'];
+		}
+		if (tileList.selectedItem) onPictureSelect(null);
+		
+		// Обновляю значения ComboBox Sort By (Сортировать по)
+		sortByDP[0].label=resourceManager.getString('myResources', 'sortName');
+		sortByDP[1].label=resourceManager.getString('myResources', 'sortFileSize');
+		sortByDP[2].label=resourceManager.getString('myResources', 'sortModified');
+		sortByCombo.selectedIndex=sortByCombo.selectedIndex;
+	}
+	
+	private function loadPicSizes(nullEvent:Event=null):void{
+		// Загружаем размеры картинок
+		var loader:URLLoader = new URLLoader();
+		loader.addEventListener(Event.COMPLETE,onPicSizesLoaded);
+		loader.load(new URLRequest(domainUrl+"index2.php?option=com_jmediamanager&controller=server&func=getimagesize&no_html=1&login="+userName+"&password="+userPass));
+	}
+
+	private function onPicSizesLoaded(event:Event):void{
+		var treeXML:XML = new XML(event.currentTarget.data);
+		smallPicSize=int(treeXML.smallsize.toString());
+		middlePicSize=int(treeXML.midlesize.toString());
+		trace(middlePicSize);
+		bigPicSize=int(treeXML.bigsize.toString());
+	}
+	
+	private function onUploadDragEnter(event:NativeDragEvent):void{
+		if(event.relatedObject!=tree&&event.relatedObject!=tileList){
+			DragManager.acceptDragDrop(filesUploadPanel);
+		}
+	}
+	
+	private function onUploadDragDrop(event:NativeDragEvent):void{
+		var allowedExt:Array=["Jpg","jpg","JPG","Jpeg","jpeg","JPEG","Gif","gif","GIF","Png","png","PNG"];
+		var arr:Array = event.clipboard.getData(ClipboardFormats.FILE_LIST_FORMAT) as Array;
+		for (var i:int=0; i<arr.length; i++){
+			var eachFile:File = arr[i];
+			// Если перетащили картинку
+			if (allowedExt.indexOf(eachFile.extension)!=-1){
+				filesForUploadDP.addItem({	name:eachFile.name,
+											size:eachFile.size,
+											status:resourceManager.getString('myResources', 'inQueue'),
+											uploaded:false,
+											url:eachFile.url});
+			}
+		}
+	}
+
+	private function onTreeDragEnter(event:NativeDragEvent):void{
+		if(event.relatedObject==tree||event.relatedObject==tileList){
+			DragManager.acceptDragDrop(tree);
+		}
+	}
+
+	private function onDropToTree(event:DragEvent):void{
+		var ds:DragSource = event.dragSource;
+		// Если перетащили что-то ненужное вылетаем
+		if( !ds.hasFormat("treeItems")&&!ds.hasFormat("items")) return;
+		 
+		// Id фотки или папки которую перемещаем
+		var idFrom:String="";
+		// Тип перетаскиваемого элемента
+		var itemType:String;
+		if(ds.hasFormat("treeItems")){
+			idFrom=(ds.dataForFormat("treeItems") as Array)[0].id;
+			if ((ds.dataForFormat("treeItems") as Array)[0].type.toString()=="module") itemType="foto" else itemType="cat";
+		} else {
+			var selPhotos:Array=ds.dataForFormat("items") as Array;
+			for (var i:int=0; i<selPhotos.length; i++){
+				idFrom+=selPhotos[i].id;
+				if(i<selPhotos.length-1) idFrom+=",";
+			}
+			itemType="foto";
+		}
+		
+		tree.selectedIndex = tree.calculateDropIndex(event);
+		// Если выбрана корневая папка то вылетаем
+		if(!Object(tree.selectedItem).parent||(Object(tree.selectedItem).parent.toString()=="undefined"&&itemType!="cat")||(Object(tree.selectedItem).parent.toString()=="0"&&itemType!="cat")){
+			event.preventDefault();
+			event.currentTarget.hideDropFeedback(event);  
+			return;	
+		}
+		var toId:String=Object(tree.selectedItem).parent;// Id директории куда перемещать
+
+		
+		// Команда переместить файл на сервере
+		var loader:URLLoader = new URLLoader();
+		var url:String=	domainUrl+"index2.php?"+
+						"option=com_jmediamanager"+
+						"&controller=server"+
+						"&func=edit+" +
+						"&no_html=1"+
+						"&type=move"+
+						"&login="+userName+
+						"&password="+userPass+
+						"&param1="+itemType+
+						"&param2="+idFrom+
+						"&param3="+toId;
+		url=encodeURI(url);
+		loader.addEventListener(Event.COMPLETE,loadFullTree);
+		treePreloader.visible=true;		
+		loader.load(new URLRequest(url));
+		
+	}
+	
+
+]]>
+</mx:Script>
+	
+	<mx:Panel id="loginPanel" title="{resourceManager.getString('myResources', 'authorization')}" borderColor="#BCD2EF" borderAlpha="1" cornerRadius="0" horizontalCenter="0" verticalCenter="0" width="412" height="175" layout="absolute">
+		<mx:Label text="{resourceManager.getString('myResources', 'domen')}" x="10" y="10" fontWeight="bold" width="80"/>
+		<mx:Label text="{resourceManager.getString('myResources', 'login')}" x="10" y="41" fontWeight="bold" width="80"/>
+		<mx:TextInput x="98" y="39" width="284" id="loginTF"/>
+		<mx:Label text="{resourceManager.getString('myResources', 'password')}" x="10" y="72" fontWeight="bold" width="80"/>
+		<mx:TextInput x="98" y="70" width="284" id="passwordTF" displayAsPassword="true"/>
+		<mx:TextInput x="98" y="8" width="284" id="domainTF"/>
+		<mx:Button y="101" label="{resourceManager.getString('myResources', 'enter')}" horizontalCenter="0" click="onLoginClick(event)"/>
+	</mx:Panel>
+	
+	<mx:HDividedBox id="mainHDividedBox" x="0" y="0" width="100%" height="100%" horizontalGap="7" visible="false">
+		<mx:Panel width="280" minWidth="280" height="100%" layout="absolute" title="{resourceManager.getString('myResources', 'myCategories')}" borderThicknessBottom="0" borderThicknessLeft="0" borderThicknessRight="0" borderThicknessTop="0" borderColor="#BCD2EF" borderAlpha="1" cornerRadius="0">
+			<mx:Canvas y="0" height="26" left="0" right="0" backgroundColor="#D3E1F1" borderStyle="solid" borderColor="#99BBE8">
+				<mx:HBox x="4" y="2" horizontalGap="3">
+					<mx:Button label="{resourceManager.getString('myResources', 'create')}" height="20" icon="@Embed(source='assets/addIcon.png')" paddingLeft="4" paddingRight="3" click="onCreateBtnClick(event)"/>
+					<mx:Button label="{resourceManager.getString('myResources', 'delete')}" height="20" icon="@Embed(source='assets/deleteIcon.png')" paddingLeft="3" paddingRight="3" click="onDeleteInTreeBtnClick(event)"/>
+					<mx:Button label="{resourceManager.getString('myResources', 'upload')}" height="20" icon="@Embed(source='assets/uploadIcon.png')" paddingLeft="3" paddingRight="3" click="uploadPanelAddFiles(event)"/>
+				</mx:HBox>
+			</mx:Canvas>
+			<mx:Tree id="tree" left="0" top="26" bottom="0" right="0" dataProvider="{treeDP}" labelField="caption"
+				dragEnabled="true"
+				dropEnabled="true"
+				dragDrop="onDropToTree(event)"
+				itemRenderer="MyTreeItemRenderer"
+				itemClick="selectTreeItem(event)"
+				editable="true"
+				itemEditBeginning="disableEditing(event)"
+				itemEditEnd="onTreeItemRename(event)"
+				doubleClickEnabled="true"
+				itemDoubleClick="onTreeDoubleClick(event)"  rowHeight="27">
+			</mx:Tree>
+			<mx:Canvas backgroundColor="#FFFFFF" backgroundAlpha="0.8" id="treePreloader" left="0" right="0" top="26" bottom="0" visible="false">
+				<mx:Label x="81" y="248" text="{resourceManager.getString('myResources', 'loading')}" width="88" textAlign="center" fontSize="14"/>
+			</mx:Canvas>
+		</mx:Panel>
+		
+		
+		
+		<mx:Panel width="100%" height="100%" minWidth="440" layout="absolute" title="{resourceManager.getString('myResources', 'myPhotos')}" borderThicknessBottom="0" borderThicknessLeft="0" borderThicknessRight="0" borderThicknessTop="0" borderColor="#BCD2EF" borderAlpha="1" cornerRadius="0" roundedBottomCorners="true">
+			<mx:Canvas y="0" height="26" left="0" right="0" backgroundColor="#D3E1F1" borderStyle="solid" borderColor="#99BBE8" horizontalScrollPolicy="off">
+				<mx:HBox x="4" y="2" horizontalGap="3">
+					<mx:Label text="{resourceManager.getString('myResources', 'filter')}" fontWeight="normal"/>
+					<mx:TextInput id="filterTF" width="64" height="21" change="onFilterChange(event)"/>
+					<mx:VRule height="17"/>
+					<mx:Label text="{resourceManager.getString('myResources', 'sortBy')}" fontWeight="normal"/>
+					<mx:ComboBox id="sortByCombo" width="120" height="20" dataProvider="{sortByDP}" change="onSortByChange(event)" />
+					<mx:VRule height="17"/>
+					<mx:Button label="{resourceManager.getString('myResources', 'deletePhotos')}" height="20" icon="@Embed(source='assets/deleteIcon.png')" click="onDeletePhotosBtnClick()" paddingLeft="3" paddingRight="3"/>
+				</mx:HBox>
+			</mx:Canvas>
+			<mx:VDividedBox left="0" right="0" top="25" bottom="0">
+				<mx:Canvas width="100%" height="100%" minHeight="150" >
+					<mx:TileList width="100%" height="100%" minHeight="150" id="tileList" allowMultipleSelection="true" dataProvider="{tileListDP}" change="onPictureSelect(event)" dragEnabled="true">
+						<mx:itemRenderer>
+							<mx:Component>
+								<mx:VBox horizontalAlign="center" verticalAlign="top" verticalGap="0" width="104" maxHeight="124" horizontalScrollPolicy="off" verticalScrollPolicy="off" x="0" y="0" >
+									<mx:Canvas width="100" height="100" horizontalScrollPolicy="off" verticalScrollPolicy="off" borderStyle="solid" borderThickness="2" borderColor="{data.borderColor}">
+										<mx:Image width="100" height="100" source="{data.url}" >
+											<mx:complete>
+												<![CDATA[
+													var img:Image=Image(event.currentTarget);
+													var parCanvas:Canvas=Canvas(img.parent);
+													parCanvas.height=img.contentHeight;
+													VBox(parCanvas.parent).height=img.contentHeight+20;
+												]]>
+											</mx:complete>
+										</mx:Image>
+									</mx:Canvas>
+									<mx:Label height="20" text="{data.imgtitle}" maxWidth="100" dragStart="{event.preventDefault()}" paddingBottom="0" paddingLeft="0" paddingRight="0" paddingTop="0"/>
+								</mx:VBox>
+							</mx:Component>
+						</mx:itemRenderer>			
+					</mx:TileList>
+					<mx:Canvas backgroundColor="#FFFFFF" backgroundAlpha="0.8" id="tileListPreloader" left="0" right="0" top="0" bottom="0" visible="false">
+						<mx:Label text="{resourceManager.getString('myResources', 'loading')}" width="88" textAlign="center" fontSize="14" horizontalCenter="0" verticalCenter="0"/>
+					</mx:Canvas>
+				</mx:Canvas>
+				<mx:Panel width="100%" height="100%" minHeight="150" layout="absolute" title="{resourceManager.getString('myResources', 'pictureUploading')}" left="0" right="0" bottom="0" borderThicknessBottom="0" borderThicknessLeft="0" borderThicknessRight="0" borderThicknessTop="0" borderColor="#BCD2EF" borderAlpha="1" cornerRadius="0" roundedBottomCorners="true" id="filesUploadPanel">
+					<mx:Canvas y="0" height="26" left="0" right="0" backgroundColor="#D3E1F1" borderStyle="solid" borderColor="#99BBE8">
+						<mx:HBox x="6" y="2" horizontalGap="4">
+							<mx:Button label="{resourceManager.getString('myResources', 'addFiles')}" icon="@Embed(source='assets/addIcon.png')" paddingLeft="3" paddingRight="3" height="20" click="uploadPanelAddFiles(event)" />
+							<mx:Button label="{resourceManager.getString('myResources', 'uploadFiles')}" icon="@Embed(source='assets/uploadIcon.png')" paddingLeft="3" paddingRight="3" height="20" click="uploadPanelUploadBtnClick(event)" />
+							<mx:Button label="{resourceManager.getString('myResources', 'clearQueue')}" paddingLeft="3" paddingRight="3" height="20" click="{filesForUploadDP=new ArrayCollection()}" />
+						</mx:HBox>
+					</mx:Canvas>
+					<mx:DataGrid id="filesForUploadDataGrid" left="0" right="0" top="26" bottom="23" dataProvider="{filesForUploadDP}">
+						<mx:columns>
+							<mx:DataGridColumn headerText="{resourceManager.getString('myResources', 'fileName')}" dataField="name"/>
+							<mx:DataGridColumn headerText="{resourceManager.getString('myResources', 'size')}" dataField="size"/>
+							<mx:DataGridColumn headerText="{resourceManager.getString('myResources', 'status')}" dataField="status"/>
+						</mx:columns>
+					</mx:DataGrid>
+					<mx:ProgressBar left="0" right="0" bottom="0" labelPlacement="center" height="19" minimum="0" maximum="100" id="progressBar" mode="manual" label=""/>
+				</mx:Panel>
+			</mx:VDividedBox>
+		</mx:Panel>
+		
+		
+		
+		<mx:Panel id="pictureDetailsPanel" maxWidth="300" width="300" minWidth="200" height="100%" layout="absolute" title="{resourceManager.getString('myResources', 'imageProperties')}" borderThicknessBottom="0" borderThicknessLeft="0" borderThicknessRight="0" borderThicknessTop="0" borderColor="#BCD2EF" borderAlpha="1" cornerRadius="0">
+			<mx:Accordion width="{pictureDetailsPanel.width}" height="100%" selectedIndex="1" id="accordion"  fontSize="11">
+				<mx:Canvas label="{resourceManager.getString('myResources', 'details')}" width="100%" height="100%" horizontalScrollPolicy="off" verticalScrollPolicy="off" resize="onPicturePreviewResize(event)">
+					<mx:VBox width="100%">
+						<mx:Image scaleContent="true" id="picturePreview" width="100%" complete="onPictureLoaded(event)" />
+						<mx:HRule width="100%"/>
+						<mx:TextArea id="pictureDetails" width="100%" borderStyle="none" height="170" editable="false" selectable="false"/>
+					</mx:VBox>
+				</mx:Canvas>
+				<mx:Canvas label="{resourceManager.getString('myResources', 'propertiesTable')}" width="{pictureDetailsPanel.width}" height="100%">
+					<mx:VBox x="8" y="8">
+						<mx:HBox width="{pictureDetailsPanel.width-18}" >
+							<mx:Label text="{resourceManager.getString('myResources', 'editorAuthor')}" width="100"/>
+							<mx:TextInput id="editorAutorTF" width="100%" enter="editorSaveTFValue(event)" focusOut="editorSaveTFValue(event)"/>
+						</mx:HBox>
+						<mx:HBox width="{pictureDetailsPanel.width-18}" >
+							<mx:Label text="{resourceManager.getString('myResources', 'editorName')}" width="100"/>
+							<mx:TextInput id="editorNameTF" width="100%" enter="editorSaveTFValue(event)" focusOut="editorSaveTFValue(event)"/>
+						</mx:HBox>
+						<mx:HBox width="{pictureDetailsPanel.width-18}" >
+							<mx:Label text="{resourceManager.getString('myResources', 'editorDescription')}" width="100"/>
+							<mx:TextInput id="editorDescriptionTF" width="100%" enter="editorSaveTFValue(event)" focusOut="editorSaveTFValue(event)"/>
+						</mx:HBox>
+						<mx:HBox width="{pictureDetailsPanel.width-18}" horizontalScrollPolicy="off" >
+							<mx:Label text="{resourceManager.getString('myResources', 'editorPublished')}" width="100"/>
+							<mx:ComboBox id="editorPublished" dataProvider="{trueFalseDP}" width="100%" change="editorSaveTFValue(event)"/>
+						</mx:HBox>
+						<mx:HBox width="{pictureDetailsPanel.width-18}" >
+							<mx:Label text="{resourceManager.getString('myResources', 'editorTags')}" width="100"/>
+							<mx:TextInput id="editorTagsTF" width="100%" enter="editorSaveTFValue(event)" focusOut="editorSaveTFValue(event)"/>
+						</mx:HBox>
+					</mx:VBox>
+				</mx:Canvas>
+			</mx:Accordion>
+		</mx:Panel>
+	</mx:HDividedBox>
+	<mx:Image y="2" source="@Embed(source='assets/english.png')" right="32" click="switchLanguage(true)" buttonMode="true"/>
+	<mx:Image y="2" source="@Embed(source='assets/russian_federation.png')" right="5" click="switchLanguage(false)" buttonMode="true"/>
+	
+</mx:WindowedApplication>

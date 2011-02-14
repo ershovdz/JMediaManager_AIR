@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Canvas xmlns:mx="http://www.adobe.com/2006/mxml" width="100" height="100"  horizontalScrollPolicy="off" verticalScrollPolicy="off">
+	<mx:Script>
+		<![CDATA[
+			import mx.core.FlexGlobals;
+			import com.jmm.ImageVo;
+			
+			[Bindable]
+			public var source:String;
+			public var image:ImageVo;
+			
+			private function thumbnailImage_progressHandler(event:ProgressEvent):void
+			{
+				progressBar.setProgress(event.bytesLoaded, event.bytesTotal);
+			}
+			
+			private function thumbnailImage_completeHandler():void
+			{
+				image = new ImageVo; 
+				image.url = source;
+				image.small_url = source;
+				image.imgtitle = source;
+				currentState = "Complete";
+			}
+		]]>
+	</mx:Script>
+	<mx:states>
+		<mx:State name="Complete">
+			<mx:RemoveChild target="{progressBar}" />
+		</mx:State>
+	</mx:states>
+	<mx:Image id="thumbnailImage" source="{source}" horizontalCenter="0" verticalCenter="0"
+			  width="80" height="80" scaleContent="true" horizontalAlign="center"
+			  verticalAlign="middle" complete="thumbnailImage_completeHandler()" progress="thumbnailImage_progressHandler(event)">
+		<mx:filters>
+			<mx:DropShadowFilter distance="0" />
+		</mx:filters>
+	</mx:Image>
+	<mx:ProgressBar id="progressBar" mode="manual" horizontalCenter="0" verticalCenter="0" label="%3 %" labelPlacement="center" fontSize="8" />
+</mx:Canvas>
+
